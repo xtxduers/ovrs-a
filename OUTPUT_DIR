@@ -1,0 +1,1 @@
+Command Line Args: Namespace(config_file='', resume=False, eval_only=False, num_gpus=1, num_machines=1, machine_rank=0, dist_url='tcp://127.0.0.1:50157', opts=['configs/vitb_384.yaml', '1', 'detectron2://ImageNetPretrained/CLIP/ViT-B-16.pt', './test_eval'])
