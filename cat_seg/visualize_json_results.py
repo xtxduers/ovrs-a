@@ -19,9 +19,9 @@ import os
 print(os.getcwd())
 
 # import san
-from . import data  # register all new datasets
-# from  .data.dataset import register_iSAID
-# from . import modeling
+from .  import data  # register all new datasets
+# from  . data. dataset import register_iSAID
+# from .  import modeling
 
 def create_instances(predictions, image_size, ignore_label=255):
     ret = Instances(image_size)
@@ -37,7 +37,7 @@ def create_instances(predictions, image_size, ignore_label=255):
     # convert instance to sem_seg map
     sem_seg = np.ones(image_size[:2], dtype=np.uint16) * ignore_label
     for mask, label in zip(ret.pred_masks, ret.pred_classes):
-        sem_seg[mask.mask == 1] = label
+        sem_seg[mask. mask == 1] = label
     return sem_seg
 
 
@@ -62,17 +62,19 @@ if __name__ == "__main__":
     with PathManager.open(args.input, "r") as f:
         predictions = json.load(f)
 
+    # 修改：使用 basename 作为 key 进行匹配
     pred_by_image = defaultdict(list)
     for p in predictions:
-
-        pred_by_image[p["file_name"]].append(p)
+        # 使用文件名（basename）而不是完整路径
+        basename = os.path.basename(p["file_name"])
+        pred_by_image[basename].append(p)
 
     dicts = list(DatasetCatalog.get(args.dataset))
-    metadata = MetadataCatalog.get(args.dataset)
+    metadata = MetadataCatalog. get(args.dataset)
     if hasattr(metadata, "thing_dataset_id_to_contiguous_id"):
 
         def dataset_id_map(ds_id):
-            return metadata.thing_dataset_id_to_contiguous_id[ds_id]
+            return metadata. thing_dataset_id_to_contiguous_id[ds_id]
 
     elif "lvis" in args.dataset:
         # LVIS results are in the same format as COCO results, but have a different
@@ -86,16 +88,17 @@ if __name__ == "__main__":
             return ds_id
 
     else:
-        raise ValueError("Unsupported dataset: {}".format(args.dataset))
+        raise ValueError("Unsupported dataset: {}". format(args.dataset))
 
     os.makedirs(args.output, exist_ok=True)
 
     for dic in tqdm.tqdm(dicts):
-        img = cv2.imread(dic["file_name"], cv2.IMREAD_COLOR)[:, :, ::-1]
+        img = cv2.imread(dic["file_name"], cv2.IMREAD_COLOR)[: , :, ::-1]
+        # 修改：使用 basename 进行匹配
         basename = os.path.basename(dic["file_name"])
-        if dic["file_name"] in pred_by_image:
+        if basename in pred_by_image:
             pred = create_instances(
-                pred_by_image[dic["file_name"]],
+                pred_by_image[basename],
                 img.shape[:2],
                 ignore_label=metadata.ignore_label,
             )
@@ -120,4 +123,6 @@ if __name__ == "__main__":
             concat = np.concatenate(
                 (img, blank_int, vis_pred, blank_int, vis_gt), axis=1
             )
-            cv2.imwrite(os.path.join(args.output, basename), concat[:, :, ::-1])
+            cv2.imwrite(os.path.join(args.output, basename), concat[: , :, ::-1])
+        else:
+            print(f"未找到匹配:  {basename}")

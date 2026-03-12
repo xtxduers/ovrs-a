@@ -6,13 +6,13 @@ output=$3
 
 if [ -z $config ]
 then
-    echo "No config file found! Run with "sh eval.sh [CONFIG_FILE] [NUM_GPUS] [OUTPUT_DIR] [OPTS]""
+    echo "No config file found!  Run with "sh eval.sh [CONFIG_FILE] [NUM_GPUS] [OUTPUT_DIR] [OPTS]""
     exit 0
 fi
 
 if [ -z $gpus ]
 then
-    echo "Number of gpus not specified! Run with "sh eval.sh [CONFIG_FILE] [NUM_GPUS] [OUTPUT_DIR] [OPTS]""
+    echo "Number of gpus not specified! Run with "sh eval. sh [CONFIG_FILE] [NUM_GPUS] [OUTPUT_DIR] [OPTS]""
     exit 0
 fi
 
@@ -30,7 +30,7 @@ python train_net.py --config $config \
  --num-gpus $gpus \
  --dist-url "auto" \
  --eval-only \
- OUTPUT_DIR $output/eval \
+ OUTPUT_DIR $output/eval_iSAID \
  MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON "datasets/iSAID.json" \
  DATASETS.TEST \(\"iSAID_all_sem_seg\"\,\) \
  TEST.SLIDING_WINDOW "True" \
@@ -43,7 +43,7 @@ python train_net.py --config $config \
  --num-gpus $gpus \
  --dist-url "auto" \
  --eval-only \
- OUTPUT_DIR $output/eval \
+ OUTPUT_DIR $output/eval_DLRSD \
  MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON "datasets/DLRSD.json" \
  DATASETS.TEST \(\"DLRSD_all_sem_seg\"\,\) \
  TEST.SLIDING_WINDOW "True" \
@@ -51,12 +51,12 @@ python train_net.py --config $config \
  MODEL.WEIGHTS $output/model_final.pth \
  $opts
 
-#Postdam_all
+#Potsdam_all
 python train_net.py --config $config \
  --num-gpus $gpus \
  --dist-url "auto" \
  --eval-only \
- OUTPUT_DIR $output/eval \
+ OUTPUT_DIR $output/eval_Potsdam \
  MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON "datasets/Potsdam.json" \
  DATASETS.TEST \(\"Potsdam_all_sem_seg\"\,\) \
  TEST.SLIDING_WINDOW "True" \
@@ -70,7 +70,7 @@ python train_net.py --config $config \
  --num-gpus $gpus \
  --dist-url "auto" \
  --eval-only \
- OUTPUT_DIR $output/eval \
+ OUTPUT_DIR $output/eval_Vaihingen \
  MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON "datasets/Vaihingen.json" \
  DATASETS.TEST \(\"Vaihingen_all_sem_seg\"\,\) \
  TEST.SLIDING_WINDOW "True" \
@@ -79,4 +79,15 @@ python train_net.py --config $config \
  $opts
 
 
-cat $output/eval/log.txt | grep copypaste
+# 打印所有数据集的评估结果
+echo "========== iSAID Results =========="
+cat $output/eval_iSAID/log.txt | grep copypaste
+
+echo "========== DLRSD Results =========="
+cat $output/eval_DLRSD/log.txt | grep copypaste
+
+echo "========== Potsdam Results =========="
+cat $output/eval_Potsdam/log.txt | grep copypaste
+
+echo "========== Vaihingen Results =========="
+cat $output/eval_Vaihingen/log.txt | grep copypaste
