@@ -81,7 +81,12 @@ class CATSeg(nn.Module):
         self.upsample1 = nn.ConvTranspose2d(self.proj_dim, 256, kernel_size=2, stride=2)
         self.upsample2 = nn.ConvTranspose2d(self.proj_dim, 128, kernel_size=4, stride=4)
 
-        self.layer_indexes = [3, 7] if clip_pretrained == "ViT-B/16" else [7, 15] 
+        # Hook layers s to e for C2SA averaging: ViT-B [6, 11], ViT-L [12, 23]
+        if clip_pretrained == "ViT-B/16":
+            s, e = 6, 11
+        else:
+            s, e = 12, 23
+        self.layer_indexes = list(range(s, e + 1))
         self.layers = []
         for l in self.layer_indexes:
             self.sem_seg_head.predictor.clip_model.visual.transformer.resblocks[l].register_forward_hook(lambda m, _, o: self.layers.append(o))
@@ -150,13 +155,33 @@ class CATSeg(nn.Module):
 
         # CLIP ViT features for guidance
         res3 = rearrange(image_features, "B (H W) C -> B C H W", H=24)
+        # Use first and last hooked layers for appearance guidance
         res4 = rearrange(self.layers[0][1:, :, :], "(H W) B C -> B C H W", H=24)
-        res5 = rearrange(self.layers[1][1:, :, :], "(H W) B C -> B C H W", H=24)
+        res5 = rearrange(self.layers[-1][1:, :, :], "(H W) B C -> B C H W", H=24)
         res4 = self.upsample1(res4)
         res5 = self.upsample2(res5)
         features = {'res5': res5, 'res4': res4, 'res3': res3,}
 
-        outputs = self.sem_seg_head(clip_features, features)
+        # Compute A_c = (1/N) * sum_{i=s}^{e} A_qk^i  (averaged cross-correlation attention)
+        # Project each hooked layer's raw features into the CLIP output space, then average
+        visual = self.sem_seg_head.predictor.clip_model.visual
+        N = len(self.layers)
+        avg_norm_feats = None
+        for layer_feat in self.layers:
+            feat_B = layer_feat.permute(1, 0, 2)  # (seq_len, B, width) -> (B, seq_len, width)
+            feat_proj = visual.ln_post(feat_B)
+            if visual.proj is not None:
+                feat_proj = feat_proj @ visual.proj  # (B, seq_len, output_dim)
+            feat_spatial = rearrange(feat_proj[:, 1:, :], "B (H W) C -> B C H W", H=24)
+            norm_feat = F.normalize(feat_spatial, dim=1)
+            avg_norm_feats = norm_feat if avg_norm_feats is None else avg_norm_feats + norm_feat
+        avg_norm_feats = avg_norm_feats / N  # (B, output_dim, 24, 24)
+
+        # Pack averaged features back into (B, 1+HW, C) format expected by the head
+        avg_feats_flat = rearrange(avg_norm_feats, "B C H W -> B (H W) C")
+        avg_clip_features = torch.cat([clip_features[:, :1, :], avg_feats_flat], dim=1)
+
+        outputs = self.sem_seg_head(avg_clip_features, features)
         if self.training:
             targets = torch.stack([x["sem_seg"].to(self.device) for x in batched_inputs], dim=0)
             outputs = F.interpolate(outputs, size=(targets.shape[-2], targets.shape[-1]), mode="bilinear", align_corners=False)
@@ -204,10 +229,27 @@ class CATSeg(nn.Module):
         clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images, dense=True)
         res3 = rearrange(clip_features[:, 1:, :], "B (H W) C -> B C H W", H=24)
         res4 = self.upsample1(rearrange(self.layers[0][1:, :, :], "(H W) B C -> B C H W", H=24))
-        res5 = self.upsample2(rearrange(self.layers[1][1:, :, :], "(H W) B C -> B C H W", H=24))
+        res5 = self.upsample2(rearrange(self.layers[-1][1:, :, :], "(H W) B C -> B C H W", H=24))
 
         features = {'res5': res5, 'res4': res4, 'res3': res3,}
-        outputs = self.sem_seg_head(clip_features, features)
+
+        # Compute A_c = (1/N) * sum_{i=s}^{e} A_qk^i  (averaged cross-correlation attention)
+        visual = self.sem_seg_head.predictor.clip_model.visual
+        N = len(self.layers)
+        avg_norm_feats = None
+        for layer_feat in self.layers:
+            feat_B = layer_feat.permute(1, 0, 2)
+            feat_proj = visual.ln_post(feat_B)
+            if visual.proj is not None:
+                feat_proj = feat_proj @ visual.proj
+            feat_spatial = rearrange(feat_proj[:, 1:, :], "B (H W) C -> B C H W", H=24)
+            norm_feat = F.normalize(feat_spatial, dim=1)
+            avg_norm_feats = norm_feat if avg_norm_feats is None else avg_norm_feats + norm_feat
+        avg_norm_feats = avg_norm_feats / N
+        avg_feats_flat = rearrange(avg_norm_feats, "B C H W -> B (H W) C")
+        avg_clip_features = torch.cat([clip_features[:, :1, :], avg_feats_flat], dim=1)
+
+        outputs = self.sem_seg_head(avg_clip_features, features)
 
         outputs = F.interpolate(outputs, size=kernel, mode="bilinear", align_corners=False)
         outputs = outputs.sigmoid()
