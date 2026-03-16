@@ -145,19 +145,22 @@ class CATSeg(nn.Module):
 
         clip_images_resized = F.interpolate(clip_images.tensor, size=self.clip_resolution, mode='bilinear', align_corners=False, )
 
+        # ---------------------------------------------------------------
+        # 四路旋转等变特征提取（四个数据处理分支，非 Git 分支）：
+        #   分支 0: 原图 (0°)   → clip_features
+        #   分支 1: 旋转 90°    → clip_features1
+        #   分支 2: 旋转 180°   → clip_features2
+        #   分支 3: 旋转 270°   → clip_features3
+        # 四路特征经 cat_seg_head_ours.py 合并后送入分割 predictor
+        # ---------------------------------------------------------------
+        clip_images_resized_90  = torch.rot90(clip_images_resized, k=1, dims=(2, 3))  # 旋转90度
+        clip_images_resized_180 = torch.rot90(clip_images_resized, k=2, dims=(2, 3))  # 旋转180度
+        clip_images_resized_270 = torch.rot90(clip_images_resized, k=3, dims=(2, 3))  # 旋转270度
 
-        # 旋转90度
-        clip_images_resized_90 = torch.rot90(clip_images_resized, k=1, dims=(2, 3))
-        # 旋转180度
-        clip_images_resized_180  = torch.rot90(clip_images_resized, k=2, dims=(2, 3))
-        # 旋转270度
-        clip_images_resized_270 = torch.rot90(clip_images_resized, k=3, dims=(2, 3))
-
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True)
-
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90, dense=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True)
+        clip_features  = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized,     dense=True)  # 分支0: 0°
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90,  dense=True)  # 分支1: 90°
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True)  # 分支2: 180°
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True)  # 分支3: 270°
 
         image_features = clip_features[:, 1:, :]
 
@@ -213,19 +216,22 @@ class CATSeg(nn.Module):
         clip_images = (image - self.clip_pixel_mean) / self.clip_pixel_std
         clip_images = F.interpolate(clip_images, size=self.clip_resolution, mode='bilinear', align_corners=False, )
         
-        # 旋转90度
-        clip_images_90 = torch.rot90(clip_images, k=1, dims=(2, 3))
-        # 旋转180度
-        clip_images_180  = torch.rot90(clip_images, k=2, dims=(2, 3))
-        # 旋转270度
-        clip_images_270 = torch.rot90(clip_images, k=3, dims=(2, 3))
-        
-        self.layers = []
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images, dense=True)
+        # ---------------------------------------------------------------
+        # 四路旋转等变特征提取（四个数据处理分支，非 Git 分支）：
+        #   分支 0: 原图 (0°)   → clip_features
+        #   分支 1: 旋转 90°    → clip_features1
+        #   分支 2: 旋转 180°   → clip_features2
+        #   分支 3: 旋转 270°   → clip_features3
+        # ---------------------------------------------------------------
+        clip_images_90  = torch.rot90(clip_images, k=1, dims=(2, 3))  # 旋转90度
+        clip_images_180 = torch.rot90(clip_images, k=2, dims=(2, 3))  # 旋转180度
+        clip_images_270 = torch.rot90(clip_images, k=3, dims=(2, 3))  # 旋转270度
 
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_90, dense=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_180, dense=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_270, dense=True)
+        self.layers = []
+        clip_features  = self.sem_seg_head.predictor.clip_model.encode_image(clip_images,     dense=True)  # 分支0: 0°
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_90,  dense=True)  # 分支1: 90°
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_180, dense=True)  # 分支2: 180°
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_270, dense=True)  # 分支3: 270°
 
 
         res3 = rearrange(clip_features[:, 1:, :], "B (H W) C -> B C H W", H=24)
