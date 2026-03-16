@@ -77,6 +77,18 @@ class CATSeg(nn.Module):
         self.sliding_window = sliding_window
         self.clip_resolution = (384, 384) if clip_pretrained == "ViT-B/16" else (336, 336)
 
+        # RCS attention parameters — 1-indexed layer numbers
+        # ViT-B/16 (12 layers): aggregate from layer 6 to 9 inclusive,
+        #   matching the ResCLIP range(5, 9) (0-indexed → 1-indexed: 6–9).
+        # ViT-L/14 (24 layers): aggregate from layer 12 to 23 inclusive
+        #   per the problem specification (s=12, e=23).
+        if clip_pretrained == "ViT-B/16":
+            self.rcs_start = 6
+            self.rcs_end = 9
+        else:
+            self.rcs_start = 12
+            self.rcs_end = 23
+
         self.proj_dim = 768 if clip_pretrained == "ViT-B/16" else 1024
         self.upsample1 = nn.ConvTranspose2d(self.proj_dim, 256, kernel_size=2, stride=2)
         self.upsample2 = nn.ConvTranspose2d(self.proj_dim, 128, kernel_size=4, stride=4)
@@ -153,11 +165,19 @@ class CATSeg(nn.Module):
         # 旋转270度
         clip_images_resized_270 = torch.rot90(clip_images_resized, k=3, dims=(2, 3))
 
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True)
+        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_resized, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
 
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90, dense=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True)
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_resized_90, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_resized_180, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_resized_270, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
 
         image_features = clip_features[:, 1:, :]
 
@@ -221,11 +241,19 @@ class CATSeg(nn.Module):
         clip_images_270 = torch.rot90(clip_images, k=3, dims=(2, 3))
         
         self.layers = []
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images, dense=True)
+        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
 
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_90, dense=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_180, dense=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_270, dense=True)
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_90, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_180, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(
+            clip_images_270, dense=True,
+            use_rcs=True, rcs_start=self.rcs_start, rcs_end=self.rcs_end)
 
 
         res3 = rearrange(clip_features[:, 1:, :], "B (H W) C -> B C H W", H=24)
