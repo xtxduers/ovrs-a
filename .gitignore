@@ -24,4 +24,4 @@ __pycache__/
 logs/
 runs/
 .ipynb_checkpoints/
-*.md
+
