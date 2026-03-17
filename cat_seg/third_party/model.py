@@ -6,6 +6,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+try:
+    from cat_seg.add_NA import compute_naclip_attention
+except ImportError:
+    compute_naclip_attention = None
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -242,6 +247,72 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x, attn_weights  # attn_weights: (N*H, L, L)
 
+    def forward_nar(
+        self,
+        x: torch.Tensor,
+        n_patches: tuple,
+        gaussian_std: float = 5.0,
+        A_c: torch.Tensor = None,
+        lambda_rca: float = 0.5,
+        addition_cache: dict = None,
+    ) -> torch.Tensor:
+        """NAR (Neighbour-Aware + RCS) forward for the final ViT block.
+
+        Implements the combined NACLIP + ResCLIP attention mechanism:
+            A_s  = softmax(kk^T / sqrt(d) + omega)   [NACLIP, eq. 1]
+            A_rca = (1-lambda) * A_s + lambda * A_c  [RCS blending, eq. 6]
+
+        Following NACLIP's "reduced" architecture (Z^(L) = SA_f(LN(Z^(L-1)))),
+        both the residual connection and the FFN are omitted in the last block.
+
+        Args:
+            x:             Input tensor of shape (L, N, D).
+            n_patches:     Spatial patch grid (h, w) excluding [CLS].
+            gaussian_std:  Gaussian sigma for neighbourhood attention (default 5.0).
+            A_c:           Aggregated cross-correlation attention (N*H, L, L)
+                           from intermediate layers (ResCLIP). If None only A_s
+                           is used.
+            lambda_rca:    Blending weight lambda_rca (default 0.5).
+            addition_cache: Optional dict for caching omega matrices.
+
+        Returns:
+            Output tensor of shape (L, N, D) — NO residual, NO FFN.
+        """
+        if compute_naclip_attention is None:
+            raise ImportError(
+                "cat_seg.add_NA is not importable; cannot use forward_nar."
+            )
+
+        num_heads = self.attn.num_heads
+        L, N, D = x.shape
+        head_dim = D // num_heads
+        scale = head_dim ** -0.5
+
+        y = self.ln_1(x)
+        qkv = F.linear(y, self.attn.in_proj_weight, self.attn.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        k = k.contiguous().view(L, N * num_heads, head_dim).transpose(0, 1)
+        v = v.contiguous().view(L, N * num_heads, head_dim).transpose(0, 1)
+
+        # A_s: NACLIP kk^T + Gaussian neighbourhood attention
+        A_s = compute_naclip_attention(k, scale, n_patches, gaussian_std, addition_cache)
+
+        if A_c is not None:
+            # RCS blending: A_rca = (1 - lambda_rca) * A_s + lambda_rca * A_c
+            A_rca = (1.0 - lambda_rca) * A_s + lambda_rca * A_c
+        else:
+            A_rca = A_s
+
+        attn_output = torch.bmm(A_rca, v)  # (N*H, L, head_dim)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(L, N, D)
+        attn_output = F.linear(
+            attn_output, self.attn.out_proj.weight, self.attn.out_proj.bias
+        )
+
+        # NACLIP "reduced" arch: no residual addition, no FFN
+        return attn_output
+
     def forward_dense_rcs(self, x: torch.Tensor, A_c: torch.Tensor, lambda_rca: float = 0.5):
         """Dense forward for the last ViT layer with RCS (Residual Cross-correlation Self-attention).
 
@@ -294,21 +365,27 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor, dense=False, use_rcs=False,
-                rcs_start=11, rcs_end=22, lambda_rca=0.5):
-        """Forward pass with optional RCS (Residual Cross-correlation Self-attention).
+    def forward(self, x: torch.Tensor, dense=False, use_rcs=False, use_nar=False,
+                n_patches=None, gaussian_std=5.0,
+                rcs_start=11, rcs_end=22, lambda_rca=0.5, addition_cache=None):
+        """Forward pass with optional RCS or NAR attention.
 
         Args:
             x: input tensor (L, N, D)
             dense: if True the last block uses forward_dense / forward_dense_rcs
             use_rcs: if True collect intermediate Q-K attention maps and apply RCS
-                     in the final block
-            rcs_start: first intermediate layer index (0-based, inclusive) to include
-                       in the aggregated attention A_c
+                     (standard QK A_s) in the final block
+            use_nar: if True apply NAR (Neighbour-Aware + RCS): uses NACLIP
+                     kk+Gaussian as A_s and removes FFN from the last block.
+                     Takes precedence over use_rcs when both are True.
+            n_patches: spatial patch grid (h, w) required when use_nar=True
+            gaussian_std: Gaussian sigma for NACLIP omega (default 5.0)
+            rcs_start: first intermediate layer index (0-based, inclusive)
             rcs_end:   last  intermediate layer index (0-based, inclusive)
-            lambda_rca: blending weight for RCS (default 0.5)
+            lambda_rca: blending weight for RCS/NAR (default 0.5)
+            addition_cache: optional dict for caching Gaussian omega matrices
         """
-        if not use_rcs:
+        if not use_rcs and not use_nar:
             for i, resblock in enumerate(self.resblocks):
                 if i == self.layers - 1 and dense:
                     x = resblock.forward_dense(x)
@@ -316,8 +393,8 @@ class Transformer(nn.Module):
                     x = resblock(x)
             return x
 
-        # --- RCS path ---
-        attn_maps = []  # collect Q-K attention maps from intermediate layers
+        # --- RCS / NAR path: collect Q-K attention from intermediate layers ---
+        attn_maps = []
         for i, resblock in enumerate(self.resblocks[:-1]):  # all except last
             if rcs_start <= i <= rcs_end:
                 x, attn_w = resblock.forward_with_attn(x)
@@ -326,14 +403,11 @@ class Transformer(nn.Module):
                 x = resblock(x)
 
         last_block = self.resblocks[-1]
-        if attn_maps:
-            # A_c = mean of selected intermediate attention maps  (N*H, L, L)
-            A_c = torch.stack(attn_maps).mean(dim=0)
-            # Apply RCS in the last block (works for both dense and non-dense modes)
-            x = last_block.forward_dense_rcs(x, A_c, lambda_rca)
-        else:
+        A_c = torch.stack(attn_maps).mean(dim=0) if attn_maps else None
+
+        if A_c is None:
             warnings.warn(
-                f"use_rcs=True but no attention maps were collected "
+                f"use_rcs/use_nar=True but no attention maps were collected "
                 f"(rcs_start={rcs_start}, rcs_end={rcs_end}, layers={self.layers}). "
                 "Falling back to standard forward pass.",
                 RuntimeWarning,
@@ -343,6 +417,16 @@ class Transformer(nn.Module):
                 x = last_block.forward_dense(x)
             else:
                 x = last_block(x)
+            return x
+
+        if use_nar:
+            # NAR: NACLIP kk+Gaussian A_s, no FFN, blend with A_c
+            x = last_block.forward_nar(
+                x, n_patches, gaussian_std, A_c, lambda_rca, addition_cache
+            )
+        else:
+            # Original RCS: QK A_s, with residual+FFN, blend with A_c
+            x = last_block.forward_dense_rcs(x, A_c, lambda_rca)
         return x
 
 
@@ -365,25 +449,35 @@ class VisualTransformer(nn.Module):
         self.patch_size = patch_size
         self.input_resolution = input_resolution
 
-    def forward(self, x: torch.Tensor, dense=False, use_rcs=False,
-                rcs_start=None, rcs_end=None, lambda_rca=0.5):
-        """Forward pass with optional RCS attention.
+        # Cache for NACLIP Gaussian omega matrices (keyed by n_patches tuple)
+        self._na_addition_cache = {}
+
+    def forward(self, x: torch.Tensor, dense=False, use_rcs=False, use_nar=False,
+                gaussian_std=5.0, rcs_start=None, rcs_end=None, lambda_rca=0.5):
+        """Forward pass with optional RCS or NAR attention.
 
         Args:
             x: input images
-            dense: whether to use the dense (last-layer shortcut) forward
-            use_rcs: whether to apply Residual Cross-correlation Self-attention
-            rcs_start: first intermediate layer (0-based) for aggregated attention;
-                       defaults to 11 for ViT-L (24 layers) and 5 for ViT-B (12 layers)
-            rcs_end:   last  intermediate layer (0-based); defaults to layers-3 so the
-                       very last block is excluded
-            lambda_rca: blending weight (default 0.5)
+            dense: whether to use the dense (all-token) forward
+            use_rcs: apply Residual Cross-correlation Self-attention
+                     (standard QK A_s, with residual+FFN in last block)
+            use_nar: apply Neighbour-Aware + RCS attention (NACLIP kk+Gaussian
+                     A_s, no FFN in last block, blended with A_c from intermediate
+                     layers). use_nar takes precedence over use_rcs.
+            gaussian_std: Gaussian sigma for NACLIP omega (default 5.0)
+            rcs_start: first intermediate layer (0-based) for aggregated A_c;
+                       auto-set per encoder depth if None
+            rcs_end:   last  intermediate layer (0-based) for aggregated A_c;
+                       auto-set per encoder depth if None
+            lambda_rca: blending weight lambda_rca (default 0.5)
         """
-        x = self.conv1(x)  # shape = [*, width, grid, grid]
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x_conv = self.conv1(x)  # shape = [*, width, grid_h, grid_w]
+        n_patches = (x_conv.shape[-2], x_conv.shape[-1])  # (grid_h, grid_w)
+
+        x = x_conv.reshape(x_conv.shape[0], x_conv.shape[1], -1)  # [*, width, grid**2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        
+
         if dense and (x.shape[1] != self.positional_embedding.shape[0]):
             x = x + self.resized_pos_embed(self.input_resolution, x.shape[1]).to(x.dtype)
         else:
@@ -392,32 +486,38 @@ class VisualTransformer(nn.Module):
 
         x = x.permute(1, 0, 2)  # NLD -> LND
 
-        if use_rcs:
+        need_rcs_range = use_rcs or use_nar
+        if need_rcs_range:
             num_layers = self.transformer.layers
-            # Default RCS range (0-based indices, inclusive):
-            # ViT-L (24 layers): layers 12-23 (1-indexed) → 11-22 (0-indexed)
-            # ViT-B (12 layers): layers 6-9  (1-indexed) →  5-8  (0-indexed)
+            # Default A_c aggregation range (0-based, inclusive):
+            # ViT-L (24 layers): s=11, e=19  (problem spec: s=11, e=19)
+            # ViT-B (12 layers): s=5,  e=9   (problem spec: s=5, e=9)
             if rcs_start is None:
                 if num_layers == 24:
                     rcs_start = 11
                 elif num_layers == 12:
                     rcs_start = 5
                 else:
-                    # Fallback: start at roughly half the depth
                     rcs_start = num_layers // 2 - 1
             if rcs_end is None:
                 if num_layers == 24:
-                    rcs_end = 22
+                    rcs_end = 19
                 elif num_layers == 12:
-                    rcs_end = 8
+                    rcs_end = 9
                 else:
-                    # Fallback: end one before the last layer
                     rcs_end = num_layers - 2
 
-        x = self.transformer(x, dense, use_rcs=use_rcs,
-                             rcs_start=rcs_start if use_rcs else 0,
-                             rcs_end=rcs_end if use_rcs else 0,
-                             lambda_rca=lambda_rca)
+        x = self.transformer(
+            x, dense,
+            use_rcs=use_rcs and not use_nar,
+            use_nar=use_nar,
+            n_patches=n_patches,
+            gaussian_std=gaussian_std,
+            rcs_start=rcs_start if need_rcs_range else 0,
+            rcs_end=rcs_end if need_rcs_range else 0,
+            lambda_rca=lambda_rca,
+            addition_cache=self._na_addition_cache if use_nar else None,
+        )
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         if dense:
@@ -518,27 +618,32 @@ class CLIP(nn.Module):
 
 
     def encode_image(self, image, masks=None, pool_mask=None, dense=False,
-                     use_rcs=False, rcs_start=None, rcs_end=None, lambda_rca=0.5):
-        """Encode an image with optional RCS (Residual Cross-correlation Self-attention).
+                     use_rcs=False, use_nar=False, gaussian_std=5.0,
+                     rcs_start=None, rcs_end=None, lambda_rca=0.5):
+        """Encode an image with optional RCS or NAR attention.
 
         Args:
             image: input image tensor
             masks: optional attention masks
             pool_mask: optional pooling mask
             dense: use dense (patch-level) features
-            use_rcs: apply RCS attention modification
-            rcs_start: first intermediate layer (0-based) for aggregated attention
+            use_rcs: apply RCS (QK A_s, residual+FFN kept in last block)
+            use_nar: apply NAR — Neighbour-Aware + RCS (NACLIP kk+Gaussian A_s,
+                     no FFN in last block, blended with A_c). use_nar takes
+                     precedence over use_rcs when both are True.
+            gaussian_std: Gaussian sigma for NACLIP omega (default 5.0)
+            rcs_start: first intermediate layer (0-based) for aggregated A_c
             rcs_end:   last  intermediate layer (0-based)
-            lambda_rca: blending weight for RCS (default 0.5)
+            lambda_rca: blending weight (default 0.5)
         """
         if pool_mask is not None:
             return self.visual(image.type(self.dtype), mask=pool_mask, dense=dense,
-                               use_rcs=use_rcs, rcs_start=rcs_start, rcs_end=rcs_end,
-                               lambda_rca=lambda_rca)
+                               use_rcs=use_rcs, use_nar=use_nar, gaussian_std=gaussian_std,
+                               rcs_start=rcs_start, rcs_end=rcs_end, lambda_rca=lambda_rca)
         if masks is None:
             return self.visual(image.type(self.dtype), dense=dense,
-                               use_rcs=use_rcs, rcs_start=rcs_start, rcs_end=rcs_end,
-                               lambda_rca=lambda_rca)
+                               use_rcs=use_rcs, use_nar=use_nar, gaussian_std=gaussian_std,
+                               rcs_start=rcs_start, rcs_end=rcs_end, lambda_rca=lambda_rca)
         else:
             return self.visual(image.type(self.dtype), masks.type(self.dtype))
 

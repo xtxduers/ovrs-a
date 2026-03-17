@@ -153,11 +153,11 @@ class CATSeg(nn.Module):
         # 旋转270度
         clip_images_resized_270 = torch.rot90(clip_images_resized, k=3, dims=(2, 3))
 
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True, use_rcs=True)
+        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized, dense=True, use_nar=True)
 
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90, dense=True, use_rcs=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True, use_rcs=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True, use_rcs=True)
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_90, dense=True, use_nar=True)
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_180, dense=True, use_nar=True)
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_resized_270, dense=True, use_nar=True)
 
         image_features = clip_features[:, 1:, :]
 
@@ -221,11 +221,11 @@ class CATSeg(nn.Module):
         clip_images_270 = torch.rot90(clip_images, k=3, dims=(2, 3))
         
         self.layers = []
-        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images, dense=True, use_rcs=True)
+        clip_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_images, dense=True, use_nar=True)
 
-        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_90, dense=True, use_rcs=True)
-        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_180, dense=True, use_rcs=True)
-        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_270, dense=True, use_rcs=True)
+        clip_features1 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_90, dense=True, use_nar=True)
+        clip_features2 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_180, dense=True, use_nar=True)
+        clip_features3 = self.sem_seg_head.predictor.clip_model.encode_image(clip_images_270, dense=True, use_nar=True)
 
 
         res3 = rearrange(clip_features[:, 1:, :], "B (H W) C -> B C H W", H=24)
