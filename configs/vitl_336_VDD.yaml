@@ -1,0 +1,10 @@
+_BASE_: vitl_336_DLRSD.yaml
+MODEL:
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 6
+    TRAIN_CLASS_JSON: "datasets/VDD.json"
+    TEST_CLASS_JSON: "datasets/VDD.json"
+
+DATASETS:
+  TRAIN: ("VDD_train_sem_seg",)
+  TEST: ("VDD_val_sem_seg",)

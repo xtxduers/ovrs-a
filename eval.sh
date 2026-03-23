@@ -147,7 +147,7 @@ echo "========== LoveDA Results =========="
 cat $output/eval_LoveDA/log.txt | grep copypaste
 
 echo "========== UDD5 Results =========="
-cat $output/eval_UDD5/log.txt | grep copypaste
+cat $output/eval_UDD/log.txt | grep copypaste
 
 echo "========== VDD Results =========="
 cat $output/eval_VDD/log.txt | grep copypaste

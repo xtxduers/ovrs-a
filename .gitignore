@@ -2,9 +2,11 @@ output/
 output_*/
 OUTPUT_DIR/
 
-# 忽略数据集目录
-datasets/
+# 忽略数据集目录（但保留类别 JSON 文件）
+datasets/*/
 OVS_datasets/
+# 允许追踪 datasets/ 下的 JSON 类别定义文件
+!datasets/*.json
 
 # 忽略模型权重等大文件
 MODEL.WEIGHTS

@@ -1,0 +1,10 @@
+_BASE_: vitl_336_DLRSD.yaml
+MODEL:
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 5
+    TRAIN_CLASS_JSON: "datasets/UDD5.json"
+    TEST_CLASS_JSON: "datasets/UDD5.json"
+
+DATASETS:
+  TRAIN: ("UDD5_train_sem_seg",)
+  TEST: ("UDD5_val_sem_seg",)
