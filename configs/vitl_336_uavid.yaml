@@ -1,0 +1,10 @@
+_BASE_: vitl_336_DLRSD.yaml
+MODEL:
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 8
+    TRAIN_CLASS_JSON: "datasets/uavid.json"
+    TEST_CLASS_JSON: "datasets/uavid.json"
+
+DATASETS:
+  TRAIN: ("uavid_train_sem_seg",)
+  TEST: ("uavid_val_sem_seg",)

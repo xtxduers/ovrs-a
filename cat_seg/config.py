@@ -91,3 +91,17 @@ def add_cat_seg_config(cfg):
 
     cfg.MODEL.SEM_SEG_HEAD.CLIP_FINETUNE = "attention"
     cfg.TEST.SLIDING_WINDOW = False
+
+    # ---------------------------------------------------------------
+    # Teacher-Student (TS) model config
+    # ---------------------------------------------------------------
+    cfg.MODEL.TS = CN()
+    # Weight lambda for the distillation loss.
+    # Total loss: L_total = L_seg + DISTILL_LAMBDA * L_distill
+    cfg.MODEL.TS.DISTILL_LAMBDA = 0.5
+    # Confidence threshold theta. Only teacher positions where
+    # max_c(R^T_{ij}) > DISTILL_THETA contribute to L_distill.
+    cfg.MODEL.TS.DISTILL_THETA = 0.1
+    # Standard deviation (sigma) of the Gaussian spatial attention bias
+    # used in the NACLIP teacher.  Paper default: 5.0.
+    cfg.MODEL.TS.GAUSSIAN_STD = 5.0

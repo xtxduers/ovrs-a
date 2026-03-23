@@ -1,0 +1,10 @@
+_BASE_: vitl_336_DLRSD.yaml
+MODEL:
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 7
+    TRAIN_CLASS_JSON: "datasets/LoveDA.json"
+    TEST_CLASS_JSON: "datasets/LoveDA.json"
+
+DATASETS:
+  TRAIN: ("LoveDA_train_sem_seg",)
+  TEST: ("LoveDA_val_sem_seg",)
