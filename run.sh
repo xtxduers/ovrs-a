@@ -25,11 +25,11 @@ fi
 shift 3
 opts=${@}
 
-python train_net.py --config $config \
+CUDA_VISIBLE_DEVICES=4,5,6,7 python train_net.py --config $config \
  --num-gpus $gpus \
  --dist-url "auto" \
  --resume \
  OUTPUT_DIR $output \
  $opts
 
-sh eval.sh $config $gpus $output $opts
+CUDA_VISIBLE_DEVICES=4,5,6,7 sh eval.sh $config $gpus $output $opts

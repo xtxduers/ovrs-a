@@ -29,6 +29,21 @@ MODEL:
     ATTENTION_TYPE: "linear"
     CLIP_FINETUNE: "attention"
   PROMPT_ENSEMBLE_TYPE: "single"
+  # ------------------------------------------------------------------
+  # Teacher-Student parameters
+  # ------------------------------------------------------------------
+  TS:
+    # Weight lambda for the distillation term.
+    # L_total = L_seg + DISTILL_LAMBDA * L_distill
+    DISTILL_LAMBDA: 0.8
+    # Confidence threshold theta for the teacher's response map.
+    # Only patch positions where max_c(R^T_{ij}) > DISTILL_THETA are distilled.
+    DISTILL_THETA: 0.3
+    # Gaussian standard deviation sigma for the NACLIP teacher attention bias.
+    # Larger values widen the neighbourhood; NACLIP paper uses sigma=5 for
+    # ViT-B/16 at 336px.  This value may need adjustment for other model variants
+    # (e.g., ViT-B/16 vs ViT-L/14@336px) since patch counts differ.
+    GAUSSIAN_STD: 5.0
 INPUT:
   MIN_SIZE_TRAIN: (384, )
   MIN_SIZE_TRAIN_SAMPLING: "choice"
@@ -40,6 +55,9 @@ INPUT:
   SIZE_DIVISIBILITY: 384 
   FORMAT: "RGB"
   DATASET_MAPPER_NAME: "mask_former_semantic"
+
+
+
 DATASETS:
   TRAIN: ("DLRSD_train_sem_seg",)
   TEST: ("DLRSD_val_sem_seg",)
