@@ -2,8 +2,9 @@ output/
 output_*/
 OUTPUT_DIR/
 
-# 忽略数据集目录
-datasets/
+# 忽略数据集目录（JSON 类别文件除外）
+datasets/*
+!datasets/*.json
 OVS_datasets/
 
 # 忽略模型权重等大文件
