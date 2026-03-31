@@ -204,6 +204,81 @@ class ResidualAttentionBlock(nn.Module):
         v = v + self.mlp(self.ln_2(v))
         return v
 
+    def _compute_qkv(self, x: torch.Tensor):
+        """Project input x (after LayerNorm) to Q, K, V in multi-head format.
+
+        Args:
+            x: Input tensor [L, N, D] (before LayerNorm).
+        Returns:
+            Tuple of (q, k, v) each of shape [N * num_heads, L, head_dim],
+            plus the scalar ``scale = head_dim ** -0.5``.
+        """
+        y = self.ln_1(x)
+        L, N, D = x.shape
+        num_heads = self.attn.num_heads
+        head_dim = D // num_heads
+
+        qkv = F.linear(y, self.attn.in_proj_weight, self.attn.in_proj_bias)  # [L, N, 3D]
+        q = qkv[..., :D]
+        k = qkv[..., D:2 * D]
+        v = qkv[..., 2 * D:]
+
+        q = q.contiguous().view(L, N * num_heads, head_dim).transpose(0, 1)
+        k = k.contiguous().view(L, N * num_heads, head_dim).transpose(0, 1)
+        v = v.contiguous().view(L, N * num_heads, head_dim).transpose(0, 1)
+
+        scale = head_dim ** -0.5
+        return q, k, v, scale
+
+    def get_qk_attn_weights(self, x: torch.Tensor):
+        """Compute per-head QK softmax attention weights for RCS aggregation.
+
+        Args:
+            x: Input tensor [L, N, D] (before LayerNorm).
+        Returns:
+            Softmax attention weights [N * num_heads, L, L].
+        """
+        q, k, _v, scale = self._compute_qkv(x)
+        attn_weights = torch.bmm(q * scale, k.transpose(1, 2))  # [N * num_heads, L, L]
+        return F.softmax(attn_weights, dim=-1)
+
+    def forward_dense_rcs(self, x: torch.Tensor, attn_c=None, lambda_rca: float = 0.5):
+        """Dense forward with RCS (Residual Cross-correlation Self-attention).
+
+        Replaces the value-only ``forward_dense`` path by computing true
+        self-attention blended with the aggregated cross-layer attention map
+        A_c per the ResCLIP RCS formulation:
+
+            A_rca = (1 - lambda_rca) * A_s + lambda_rca * A_c
+
+        Args:
+            x: Input tensor [L, N, D].
+            attn_c: Aggregated attention map A_c [N * num_heads, L, L], or None.
+            lambda_rca: Blending coefficient (default 0.5).
+        Returns:
+            Output tensor [L, N, D].
+        """
+        L, N, D = x.shape
+        q, k, v, scale = self._compute_qkv(x)
+
+        # Standard self-attention A_s
+        attn_s = F.softmax(torch.bmm(q * scale, k.transpose(1, 2)), dim=-1)  # [N*H, L, L]
+
+        if attn_c is not None:
+            # RCS blend: A_rca = (1 - lambda_rca) * A_s + lambda_rca * A_c
+            attn_rca = (1.0 - lambda_rca) * attn_s + lambda_rca * attn_c
+        else:
+            attn_rca = attn_s
+
+        # Attention-weighted output: [N*H, L, head_dim] -> [L, N, D]
+        attn_output = torch.bmm(attn_rca, v)
+        attn_output = attn_output.transpose(0, 1).contiguous().view(L, N, D)
+        attn_output = self.attn.out_proj(attn_output)
+
+        x = x + attn_output
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
 class Transformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
         super().__init__()
@@ -211,12 +286,45 @@ class Transformer(nn.Module):
         self.layers = layers
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor, dense=False):
-        for i, resblock in enumerate(self.resblocks):
-            if i == self.layers - 1 and dense:
+    def forward(self, x: torch.Tensor, dense=False,
+                use_rcs=False, rcs_start=12, rcs_end=23, lambda_rca=0.5):
+        """Forward pass, optionally applying RCS attention in the last dense layer.
+
+        When ``use_rcs=True`` and ``dense=True`` the transformer collects
+        per-head QK attention maps from layers ``rcs_start`` to ``rcs_end``
+        (1-indexed), averages them into A_c, and uses the RCS blend
+
+            A_rca = (1 - lambda_rca) * A_s + lambda_rca * A_c
+
+        as the attention weights for the final dense block.
+        """
+        if use_rcs:
+            attn_maps = []
+            # 0-indexed range to collect from (before the last block)
+            collect_start = rcs_start - 1
+            collect_end = min(rcs_end - 1, self.layers - 2)
+
+            for i, resblock in enumerate(self.resblocks):
+                if i == self.layers - 1 and dense:
+                    # Last block: apply RCS if we collected maps
+                    if attn_maps:
+                        attn_c = torch.stack(attn_maps).mean(dim=0)
+                        x = resblock.forward_dense_rcs(x, attn_c=attn_c, lambda_rca=lambda_rca)
+                    else:
+                        x = resblock.forward_dense(x)
+                elif i == self.layers - 1:
+                    x = resblock(x)
+                else:
+                    # Collect QK attention for layers in the aggregation window
+                    if collect_start <= i <= collect_end:
+                        attn_maps.append(resblock.get_qk_attn_weights(x))
+                    x = resblock(x)
+        else:
+            for i, resblock in enumerate(self.resblocks):
+                if i == self.layers - 1 and dense:
                     x = resblock.forward_dense(x)
-            else:
-                x = resblock(x)
+                else:
+                    x = resblock(x)
         return x
 
 
@@ -239,7 +347,8 @@ class VisualTransformer(nn.Module):
         self.patch_size = patch_size
         self.input_resolution = input_resolution
 
-    def forward(self, x: torch.Tensor, dense=False):
+    def forward(self, x: torch.Tensor, dense=False,
+                use_rcs=False, rcs_start=12, rcs_end=23, lambda_rca=0.5):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -252,7 +361,9 @@ class VisualTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x, dense)
+        x = self.transformer(x, dense,
+                             use_rcs=use_rcs, rcs_start=rcs_start,
+                             rcs_end=rcs_end, lambda_rca=lambda_rca)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
         if dense:
@@ -352,11 +463,14 @@ class CLIP(nn.Module):
         return self.visual.conv1.weight.dtype
 
 
-    def encode_image(self, image, masks=None, pool_mask=None, dense=False):
+    def encode_image(self, image, masks=None, pool_mask=None, dense=False,
+                     use_rcs=False, rcs_start=12, rcs_end=23, lambda_rca=0.5):
         if pool_mask is not None:
             return self.visual(image.type(self.dtype), mask=pool_mask, dense=dense)
         if masks == None:
-            return self.visual(image.type(self.dtype), dense=dense)
+            return self.visual(image.type(self.dtype), dense=dense,
+                               use_rcs=use_rcs, rcs_start=rcs_start,
+                               rcs_end=rcs_end, lambda_rca=lambda_rca)
         else:
             return self.visual(image.type(self.dtype), masks.type(self.dtype))
 
