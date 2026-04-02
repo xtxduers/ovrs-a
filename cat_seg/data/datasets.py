@@ -24,7 +24,7 @@ def _build_image_index(image_root: str) -> Dict[str, str]:
     index: Dict[str, str] = {}
     for image_path in _list_files_with_ext(image_root, _IMAGE_EXTENSIONS):
         stem = os.path.splitext(os.path.basename(image_path))[0]
-        index.setdefault(stem, image_path)
+        index[stem] = image_path
     return index
 
 
