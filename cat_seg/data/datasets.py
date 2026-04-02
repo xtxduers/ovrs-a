@@ -64,6 +64,7 @@ def _register_sem_seg_dataset(
     class_count: int,
 ) -> None:
     if dataset_name in DatasetCatalog.list():
+        print(f"[cat_seg.data.datasets] Dataset already registered, skip: {dataset_name}")
         return
     DatasetCatalog.register(
         dataset_name,

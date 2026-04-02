@@ -18,7 +18,11 @@
 
 3. **数据目录自动适配**
    - 默认根目录：`datasets/`（可通过环境变量 `DETECTRON2_DATASETS` 覆盖）。
-   - 对每个数据集支持多种常见目录布局候选（如 `images/train + annotations/train`、`img_dir/train + ann_dir/train` 等），优先使用实际存在的路径。
+    - 对每个数据集支持多种常见目录布局候选（如 `images/train + annotations/train`、`img_dir/train + ann_dir/train` 等），优先使用实际存在的路径。
+
+4. **元数据说明**
+   - 注册时会为每个数据集写入 `stuff_classes`，当前使用占位名 `class_0 ... class_n`。
+   - 这不影响训练与基本评估流程；如需更友好的可视化/类别展示，可替换为真实类别名。
 
 ## 使用方式
 
